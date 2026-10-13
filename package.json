@@ -1,0 +1,7 @@
+{
+  "name": "hunter-killer-rl",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Browser-based Q-learning demo: hunters learn to track and corner an assassin.",
+  "scripts": { "dev": "npx serve public" }
+}

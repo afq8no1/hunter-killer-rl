@@ -1,0 +1,139 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Watch hunters learn to track down an assassin with Q-learning, live in your browser. Or play as the assassin.">
+<meta property="og:title" content="Hunter-Killer · Q-Learning Demo">
+<meta property="og:description" content="Reinforcement learning in your browser: hunters with limited vision learn to corner you.">
+<meta property="og:type" content="website">
+<title>Hunter-Killer · Q-Learning Demo</title>
+<style>
+:root{color-scheme:dark;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);--bg:#0a0e13;--panel:#121923;--line:#223042;--tx:#d7e2ee;--mut:#7f93a8;--red:#ff4d5e;--cy:#3de0ff}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:940px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:0 0 2px}.sub{color:var(--mut);margin:0 0 12px}
+.game{display:grid;gap:12px;grid-template-columns:minmax(0,1.7fr) minmax(0,1fr)}
+@media(max-width:740px){.game{grid-template-columns:1fr}}
+canvas{width:100%;display:block;background:#0d131a;border:1px solid var(--line);border-radius:10px;touch-action:none}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px}
+.btns{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
+button{background:var(--panel);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font:inherit;cursor:pointer}
+button.on{border-color:var(--cy);color:var(--cy)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.k{color:var(--mut);font-size:12px}.v{font-size:20px;font-weight:600}
+.hint{color:var(--mut);font-size:13px;min-height:38px}
+h3{margin:0 0 6px;font-size:14px}p{margin:0 0 8px;color:var(--mut)}
+label{color:var(--mut);font-size:13px;display:flex;gap:8px;align-items:center}
+b.r{color:var(--red)}b.c{color:var(--cy)}
+</style></head><body><div class="wrap">
+<h1>Hunter-Killer · Q-Learning Demo</h1>
+<p class="sub">Three hunters with limited vision learn to track and corner a fleeing assassin, from scratch, right in your browser.</p>
+<div class="game"><div>
+<canvas id="cv" width="640" height="448"></canvas>
+<div class="btns"><button id="bT" class="on">⚡ Turbo train</button><button id="bW">👁 Watch AI learn</button><button id="bP">🎮 Play as assassin</button><button id="bR">↺ Reset brain</button></div>
+<label>Watch speed <input id="sp" type="range" min="25" max="300" value="90"><span id="spv"></span></label>
+<div class="hint" id="hint"></div>
+</div><div>
+<div class="panel"><div class="grid">
+<div><div class="k">Episodes</div><div class="v" id="ep">0</div></div>
+<div><div class="k">Exploration (ε)</div><div class="v" id="eps">1.00</div></div>
+<div><div class="k">Catch rate (last 100)</div><div class="v" id="rate">0%</div></div>
+<div><div class="k">Avg episode length</div><div class="v" id="len">0</div></div>
+<div><div class="k">Q-states learned</div><div class="v" id="st">0</div></div>
+<div><div class="k">You vs hunters</div><div class="v" style="font-size:14px" id="you">0 escaped · 0 caught</div></div>
+</div></div>
+<div class="panel"><h3>Learning curve</h3><canvas id="ch" width="420" height="160"></canvas></div>
+</div></div>
+<div class="panel"><h3>How it works</h3>
+<p><b class="r">Hunters</b> share one Q-table (tabular Q-learning, α=0.15, γ=0.95, ε-greedy). Each hunter sees only within 6 cells and line-of-sight. Its state is: direction and distance to the team's last-known target, whether it sees you now, which neighbouring cells are walls, and its last move. Rewards: +10 for the kill, small bonuses for spotting and closing in, a tiny penalty per step.</p>
+<p>The <b class="c">assassin</b> is a scripted evader during training (flees what it sees, wanders otherwise). Hit <b>Play</b> to control it yourself with arrows/WASD or swipe (tap to stop). Hunters keep learning from you. Survive 250 ticks to win. Try <b>Reset brain</b> to feel the difference between untrained and trained hunters.</p></div>
+</div>
+<script>
+const W=20,H=14,CS=32,VR=6,MAXT=250,ALPHA=.15,GAMMA=.95,EPSMIN=.04,DECAY=.9992;
+const MAP=["####################","#..................#","#.###..........###.#","#.#..............#.#","#.#....######....#.#","#......#....#......#","#..##..#....#..##..#","#..##..........##..#","#......#....#......#","#.#....######....#.#","#.#..............#.#","#.###..........###.#","#..................#","####################"];
+const wall=(x,y)=>x<0||y<0||x>=W||y>=H||MAP[y][x]==='#';
+const open=[];for(let y=0;y<H;y++)for(let x=0;x<W;x++)if(!wall(x,y))open.push([x,y]);
+const DX=[0,0,-1,1],DY=[-1,1,0,0];
+const $=id=>document.getElementById(id),g=$('cv').getContext('2d'),cg=$('ch').getContext('2d');
+function los(x0,y0,x1,y1){let dx=Math.abs(x1-x0),dy=Math.abs(y1-y0),sx=x0<x1?1:-1,sy=y0<y1?1:-1,err=dx-dy,x=x0,y=y0;
+ while(!(x===x1&&y===y1)){const e2=2*err;if(e2>-dy){err-=dy;x+=sx}if(e2<dx){err+=dx;y+=sy}if(!(x===x1&&y===y1)&&wall(x,y))return false}return true}
+const sees=(a,b)=>(a.x-b.x)**2+(a.y-b.y)**2<=VR*VR&&los(a.x,a.y,b.x,b.y);
+const kill=(h,p)=>{const dx=Math.abs(h.x-p.x),dy=Math.abs(h.y-p.y);return dx+dy<=1||(dx===1&&dy===1&&!wall(h.x,p.y)&&!wall(p.x,h.y))};
+const NS=10*4*2*16*4*2;let Q=new Float32Array(NS*4);
+let env,mode='turbo',eps=1,ep=0,recent=[],hist=[],hstep=10,heat=new Float32Array(W*H),youS=0,youC=0,held=-1,pending=-1,epsSec=0;
+function look(age){const e=env;let any=false;for(const h of e.h){h.sees=sees(h,e.p);if(h.sees)any=true}
+ if(any)e.mem={x:e.p.x,y:e.p.y,age:0};else if(age&&e.mem){e.mem.age++;if(e.mem.age>12)e.mem=null}}
+function resetEnv(){const hs=[[1,1],[18,1],[9,12]].map(([x,y])=>({x,y,la:0,sees:false}));let p;
+ do{p=open[Math.random()*open.length|0]}while(hs.some(h=>Math.abs(h.x-p[0])+Math.abs(h.y-p[1])<9));
+ env={h:hs,p:{x:p[0],y:p[1]},mem:null,t:0,done:false,caught:false,dir:Math.random()*4|0,wait:0,started:false};look(false)}
+function enc(h){const m=env.mem;let tc=9,db=0,fr=0;
+ if(m){const dx=m.x-h.x,dy=m.y-h.y;tc=(Math.sign(dx)+1)*3+Math.sign(dy)+1;const d=Math.abs(dx)+Math.abs(dy);db=d<=1?0:d<=3?1:d<=6?2:3;fr=m.age<=3?1:0}
+ let wm=0;for(let a=0;a<4;a++)if(wall(h.x+DX[a],h.y+DY[a]))wm|=1<<a;
+ return((((tc*4+db)*2+(h.sees?1:0))*16+wm)*4+h.la)*2+fr}
+function best(s){let b=0,bv=-1e9,n=0;for(let a=0;a<4;a++){const v=Q[s*4+a];if(v>bv+1e-9){bv=v;b=a;n=1}else if(Math.abs(v-bv)<=1e-9&&Math.random()<1/++n)b=a}return b}
+const dd=h=>env.mem?Math.abs(env.mem.x-h.x)+Math.abs(env.mem.y-h.y):0;
+function botDir(){const p=env.p,opts=[];for(let a=0;a<4;a++)if(!wall(p.x+DX[a],p.y+DY[a]))opts.push(a);
+ const seen=env.h.some(h=>Math.abs(h.x-p.x)+Math.abs(h.y-p.y)<=8&&los(p.x,p.y,h.x,h.y));
+ if(seen&&Math.random()<.9){let b=opts[0],bv=1e9;for(const a of opts){const nx=p.x+DX[a],ny=p.y+DY[a];let c=0;
+  for(const h of env.h){const d=Math.abs(h.x-nx)+Math.abs(h.y-ny);c+=1/((d+.5)*(d+.5))}if(c<bv){bv=c;b=a}}return b}
+ if(opts.includes(env.dir)&&Math.random()<.7)return env.dir;return opts[Math.random()*opts.length|0]}
+function step(bot,hd){const e=env,p=e.p,E=mode==='play'?.03:eps;
+ let pa=bot?(Math.random()>.15?botDir():-1):hd;
+ if(pa>=0){const nx=p.x+DX[pa],ny=p.y+DY[pa];if(!wall(nx,ny)){p.x=nx;p.y=ny}e.dir=pa}
+ look(false);
+ const tr=e.h.map(h=>{const s=enc(h);return{h,s,a:Math.random()<E?(Math.random()*4|0):best(s),d0:dd(h),had:!!e.mem,sw:h.sees}});
+ for(const t of tr){const h=t.h,nx=h.x+DX[t.a],ny=h.y+DY[t.a];if(!wall(nx,ny)){h.x=nx;h.y=ny}h.la=t.a}
+ look(true);e.t++;
+ const caught=e.h.some(h=>kill(h,p)),to=e.t>=MAXT;e.caught=caught;e.done=caught||to;
+ for(const t of tr){const h=t.h;let r=-.02;if(h.sees)r+=.05;if(h.sees&&!t.sw)r+=.3;if(t.had&&e.mem)r+=.1*(t.d0-dd(h));if(caught)r+=10;
+  const s2=enc(h),i=t.s*4+t.a,nxt=e.done?0:GAMMA*Math.max(Q[s2*4],Q[s2*4+1],Q[s2*4+2],Q[s2*4+3]);Q[i]+=ALPHA*(r+nxt-Q[i])}}
+function rate(){return recent.length?recent.reduce((a,b)=>a+b[0],0)/recent.length:0}
+function finishEp(c){ep++;recent.push([c?1:0,env.t]);if(recent.length>100)recent.shift();if(c)heat[env.p.y*W+env.p.x]++;
+ eps=Math.max(EPSMIN,eps*DECAY);if(ep%hstep===0){hist.push([rate(),eps]);if(hist.length>400){hist=hist.filter((_,i)=>i%2===0);hstep*=2}}}
+function runEpisode(){resetEnv();while(!env.done)step(true,-1);finishEp(env.caught)}
+function tick(){const e=env;if(e.done){if(--e.wait<=0)resetEnv();return}
+ if(mode==='play'){const d=pending>=0?pending:held;pending=-1;if(!e.started){if(d<0)return;e.started=true}step(false,d)}else step(true,-1);
+ if(e.done){e.wait=10;if(mode==='play'){e.caught?youC++:youS++}else finishEp(e.caught)}}
+function setMode(m){mode=m;for(const[k,v]of[['bT','turbo'],['bW','watch'],['bP','play']])$(k).classList.toggle('on',v===m);held=pending=-1;resetEnv();
+ $('hint').textContent={turbo:'Turbo: thousands of self-play episodes run headless. Red cells show where kills have happened.',watch:'Watching live training. Hunters are exploring randomly at first; they improve as ε falls.',play:'Arrow keys / WASD / swipe to move (tap stops). Hunters see only the lit zones. Survive 250 ticks!'}[m]}
+$('bT').onclick=()=>setMode('turbo');$('bW').onclick=()=>setMode('watch');$('bP').onclick=()=>setMode('play');
+$('bR').onclick=()=>{Q.fill(0);eps=1;ep=0;recent=[];hist=[];hstep=10;heat.fill(0);resetEnv()};
+$('sp').oninput=()=>$('spv').textContent=$('sp').value+'ms';$('spv').textContent='90ms';
+const KM={ArrowUp:0,w:0,W:0,ArrowDown:1,s:1,S:1,ArrowLeft:2,a:2,A:2,ArrowRight:3,d:3,D:3};
+addEventListener('keydown',e=>{if(e.key in KM&&mode==='play'){e.preventDefault();held=pending=KM[e.key]}});
+addEventListener('keyup',e=>{if(KM[e.key]===held)held=-1});
+let ts0;const cv=$('cv');cv.addEventListener('touchstart',e=>{ts0=e.touches[0]},{passive:true});
+cv.addEventListener('touchend',e=>{if(mode!=='play'||!ts0)return;const t=e.changedTouches[0],dx=t.clientX-ts0.clientX,dy=t.clientY-ts0.clientY;
+ if(Math.max(Math.abs(dx),Math.abs(dy))<20){held=-1;return}held=pending=Math.abs(dx)>Math.abs(dy)?(dx>0?3:2):(dy>0?1:0)});
+function txt(s,y,sz,c){g.fillStyle=c||'#fff';g.font='600 '+sz+'px system-ui,sans-serif';g.textAlign='center';g.fillText(s,320,y)}
+function draw(){g.clearRect(0,0,640,448);
+ for(let y=0;y<H;y++)for(let x=0;x<W;x++){g.fillStyle=MAP[y][x]==='#'?'#1f2c3b':((x+y)&1?'#0f161e':'#111a23');g.fillRect(x*CS,y*CS,CS,CS)}
+ const e=env;
+ for(const h of e.h)for(let y=Math.max(0,h.y-VR);y<=Math.min(H-1,h.y+VR);y++)for(let x=Math.max(0,h.x-VR);x<=Math.min(W-1,h.x+VR);x++){
+  if((x-h.x)**2+(y-h.y)**2>VR*VR||!los(h.x,h.y,x,y))continue;g.fillStyle=h.sees?'rgba(255,77,94,.22)':'rgba(255,200,80,.11)';g.fillRect(x*CS,y*CS,CS,CS)}
+ if(e.mem){g.strokeStyle='rgba(255,77,94,.8)';g.setLineDash([4,4]);g.beginPath();g.arc(e.mem.x*CS+16,e.mem.y*CS+16,12,0,7);g.stroke();g.setLineDash([]);txt('?',e.mem.y*CS+21,14,'#ff4d5e');g.textAlign='start'}
+ for(const h of e.h){if(h.sees){g.strokeStyle='rgba(255,77,94,.6)';g.beginPath();g.moveTo(h.x*CS+16,h.y*CS+16);g.lineTo(e.p.x*CS+16,e.p.y*CS+16);g.stroke()}
+  g.fillStyle='#ff4d5e';g.beginPath();g.arc(h.x*CS+16,h.y*CS+16,10,0,7);g.fill();g.fillStyle='#2a0a10';g.beginPath();g.arc(h.x*CS+16+DX[h.la]*4,h.y*CS+16+DY[h.la]*4,4,0,7);g.fill()}
+ g.shadowColor='#3de0ff';g.shadowBlur=14;g.fillStyle='#3de0ff';g.beginPath();g.arc(e.p.x*CS+16,e.p.y*CS+16,9,0,7);g.fill();g.shadowBlur=0;
+ if(mode==='turbo'){g.fillStyle='rgba(10,14,19,.72)';g.fillRect(0,0,640,448);const mx=Math.max(1,...heat);
+  for(let i=0;i<heat.length;i++)if(heat[i]){g.fillStyle='rgba(255,77,94,'+(.15+.75*heat[i]/mx)+')';g.fillRect((i%W)*CS,(i/W|0)*CS,CS,CS)}
+  txt('⚡ TURBO TRAINING',210,26);txt(Math.round(epsSec)+' episodes/sec · red = where assassins got caught',240,14,'#9fb3c8')}
+ else if(mode==='play'&&!e.started)txt('Press an arrow key / WASD or swipe to start',230,18);
+ else if(e.done)txt(e.caught?'ELIMINATED':'YOU SURVIVED',230,28,e.caught?'#ff4d5e':'#5dffa0')}
+function chart(){const w=420,h=160;cg.clearRect(0,0,w,h);cg.strokeStyle='#223042';cg.fillStyle='#7f93a8';cg.font='10px system-ui';cg.textAlign='start';
+ for(const v of[0,.5,1]){const y=h-12-v*(h-24);cg.beginPath();cg.moveTo(28,y);cg.lineTo(w,y);cg.stroke();cg.fillText(v*100+'%',0,y+3)}
+ const line=(i,c)=>{if(hist.length<2)return;cg.strokeStyle=c;cg.beginPath();hist.forEach((p,k)=>{const x=28+k/(hist.length-1)*(w-32),y=h-12-p[i]*(h-24);k?cg.lineTo(x,y):cg.moveTo(x,y)});cg.stroke()};
+ line(1,'#5a6b7e');line(0,'#ff4d5e');cg.fillStyle='#ff4d5e';cg.fillText('catch rate',34,10);cg.fillStyle='#7f93a8';cg.fillText('ε (exploration)',100,10)}
+let last=0,fc=0,learned=0,t0s=performance.now(),n0=0;
+function frame(ts){let dt=ts-last;last=ts;if(dt>500)dt=0;
+ if(mode==='turbo'){const t0=performance.now();while(performance.now()-t0<12)runEpisode();
+  const now=performance.now();if(now-t0s>500){epsSec=(ep-n0)/((now-t0s)/1000);n0=ep;t0s=now}}
+ else{env.acc=(env.acc||0)+dt;const iv=mode==='play'?150:+$('sp').value;while(env.acc>=iv){env.acc-=iv;tick()}}
+ draw();fc++;
+ if(fc%6===0){$('ep').textContent=ep;$('eps').textContent=(mode==='play'?eps:eps).toFixed(2);$('rate').textContent=Math.round(rate()*100)+'%';
+  $('len').textContent=recent.length?Math.round(recent.reduce((a,b)=>a+b[1],0)/recent.length):0;
+  $('you').textContent=youS+' escaped · '+youC+' caught';chart()}
+ if(fc%30===0){let n=0;for(let s=0;s<NS;s++)if(Q[s*4]||Q[s*4+1]||Q[s*4+2]||Q[s*4+3])n++;$('st').textContent=n}
+ requestAnimationFrame(frame)}
+setMode('turbo');requestAnimationFrame(frame);
+</script></body></html>
